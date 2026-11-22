@@ -401,7 +401,7 @@ function Get-EndpointModels {
         else { $headers['Authorization'] = "Bearer $ApiKey" }
     }
 
-    $lastErr = $null
+    $attempts = @()
     foreach ($url in $candidates) {
         try {
             $resp = Invoke-RestMethod -Uri $url -Headers $headers -Method Get -TimeoutSec 20
@@ -414,12 +414,14 @@ function Get-EndpointModels {
                 $ids = @($resp | ForEach-Object { if ($_.id) { $_.id } elseif ($_.name) { $_.name } } | Where-Object { $_ })
             }
             if ($ids.Count -gt 0) { return @($ids | Select-Object -Unique | Sort-Object) }
-            $lastErr = "Endpoint replied but no model ids were recognized ($url)."
+            $attempts += "$url -> replied, but no model ids were recognized"
         } catch {
-            $lastErr = "$url -> $($_.Exception.Message)"
+            $attempts += "$url -> $($_.Exception.Message)"
         }
     }
-    throw "Could not list models from endpoint. $lastErr"
+    # Report every URL tried: with only the last error, a failure on /v1/models is
+    # hidden behind the fallback's (usually less relevant) /models error.
+    throw "Could not list models from endpoint. Tried: $($attempts -join '; ')"
 }
 
 # ------------------------------------------------------------- config -------
