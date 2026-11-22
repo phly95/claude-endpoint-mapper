@@ -448,6 +448,9 @@ function Write-DesktopConfig {
         [string]$ApiKey,
         [ValidateSet('bearer', 'x-api-key')][string]$AuthScheme = 'bearer',
         [Parameter(Mandatory)][array]$Models,   # @{ Name; Tier; Label }
+        [ValidateSet('keep', 'none', 'tavily', 'brave', 'exa', 'custom')][string]$WebSearchProvider = 'keep',
+        [string]$WebSearchApiKey,
+        [string]$WebSearchCustomUrl,
         [switch]$CreateIfMissing
     )
     $cfgPath = Get-DesktopConfigPath
@@ -509,10 +512,97 @@ function Write-DesktopConfig {
         Set-Prop $cfg 'developerModeEnabled' $true
     }
 
+    # --- optional built-in web search (runs in the desktop app, not the gateway) ---
+    # 'keep' leaves the config alone; 'none' removes our entry; a provider adds or
+    # replaces it. Unrelated managedMcpServers entries are always preserved.
+    $wsExisting = $null
+    $otherServers = @()
+    if ($cfg.PSObject.Properties.Name -contains 'managedMcpServers' -and $cfg.managedMcpServers) {
+        foreach ($srv in @($cfg.managedMcpServers)) {
+            if ("$($srv.server)" -eq 'websearch') {
+                if (-not $wsExisting) { $wsExisting = $srv }
+            } else {
+                $otherServers += $srv
+            }
+        }
+    }
+
+    $webSearchState = 'unchanged'
+    if ($WebSearchProvider -ne 'keep') {
+        $servers = $otherServers
+        if ($WebSearchProvider -eq 'none') {
+            $webSearchState = 'disabled'
+        } else {
+            $key = "$WebSearchApiKey".Trim()
+            $reuse = ($wsExisting -and "$($wsExisting.provider)" -eq $WebSearchProvider)
+            $headers = $null
+            # blank key + same provider: reuse the headers already on disk
+            if (-not $key -and $reuse -and
+                $wsExisting.PSObject.Properties.Name -contains 'headers' -and $wsExisting.headers) {
+                $headers = $wsExisting.headers
+            }
+
+            $customUrl = "$WebSearchCustomUrl".Trim()
+            if ($WebSearchProvider -eq 'custom' -and -not $customUrl -and $reuse -and
+                $wsExisting.PSObject.Properties.Name -contains 'customUrl') {
+                $customUrl = "$($wsExisting.customUrl)"
+            }
+            if ($WebSearchProvider -eq 'custom' -and -not $customUrl) {
+                throw 'Custom web search needs a URL. The built-in server POSTs {"q":"..."} to it and expects {"results":[{title,url,snippet}]} back.'
+            }
+
+            if (-not $headers) {
+                switch ($WebSearchProvider) {
+                    'tavily' {
+                        if ($key) { $headers = [ordered]@{ Authorization = "Bearer $key" } }
+                        else      { $headers = [ordered]@{ 'X-Tavily-Access-Mode' = 'keyless' } }
+                    }
+                    'brave' {
+                        if (-not $key) { throw 'Brave web search needs an API key (sent as X-Subscription-Token).' }
+                        $headers = [ordered]@{ 'X-Subscription-Token' = $key }
+                    }
+                    'exa' {
+                        if (-not $key) { throw 'Exa web search needs an API key (sent as x-api-key).' }
+                        $headers = [ordered]@{ 'x-api-key' = $key }
+                    }
+                    'custom' {
+                        if ($key) { $headers = [ordered]@{ Authorization = "Bearer $key" } }
+                        else      { $headers = [ordered]@{} }
+                    }
+                }
+            }
+
+            $entry = [ordered]@{
+                name       = 'Web search'
+                server     = 'websearch'
+                provider   = $WebSearchProvider
+                headers    = $headers
+                toolPolicy = [ordered]@{ 'web_search' = 'allow' }
+            }
+            if ($WebSearchProvider -eq 'custom') { $entry['customUrl'] = $customUrl }
+            $servers = @($entry) + $otherServers
+
+            $webSearchState = $WebSearchProvider
+            $keyless = $false
+            if ($headers -is [System.Collections.IDictionary]) {
+                $keyless = $headers.Contains('X-Tavily-Access-Mode')
+            } elseif ($headers.PSObject.Properties.Name -contains 'X-Tavily-Access-Mode') {
+                $keyless = $true
+            }
+            if ($keyless) { $webSearchState += ' (keyless)' }
+        }
+
+        if ($servers.Count -gt 0) {
+            Set-Prop $cfg 'managedMcpServers' @($servers)
+        } elseif ($cfg.PSObject.Properties.Name -contains 'managedMcpServers') {
+            $cfg.PSObject.Properties.Remove('managedMcpServers')
+        }
+    }
+
     $json = $cfg | ConvertTo-Json -Depth 12
     $utf8NoBom = New-Object System.Text.UTF8Encoding($false)
     [System.IO.File]::WriteAllText($cfgPath, $json, $utf8NoBom)
-    return [pscustomobject]@{ Path = $cfgPath; ModelCount = $entries.Count; Bytes = (Get-Item $cfgPath).Length }
+    return [pscustomobject]@{ Path = $cfgPath; ModelCount = $entries.Count; Bytes = (Get-Item $cfgPath).Length; WebSearch = $webSearchState }
 }
 
 function Write-ClaudeCodeConfig {
@@ -572,6 +662,9 @@ function Invoke-Apply {
         [string]$ApiKey,
         [ValidateSet('bearer', 'x-api-key')][string]$AuthScheme = 'bearer',
         [Parameter(Mandatory)][array]$Models,
+        [ValidateSet('keep', 'none', 'tavily', 'brave', 'exa', 'custom')][string]$WebSearchProvider = 'keep',
+        [string]$WebSearchApiKey,
+        [string]$WebSearchCustomUrl,
         [switch]$ConfigureDesktop,
         [switch]$ConfigureClaudeCode,
         [switch]$SkipPatch,
@@ -606,8 +699,11 @@ function Invoke-Apply {
             $log.Add("Integrity: $($ir.EntriesChecked) entries checked, $($ir.EntriesFixed) fixed; exe expectation synced=$($ir.ExePatched)")
         }
 
-        $cfgResult = Write-DesktopConfig -BaseUrl $BaseUrl -ApiKey $ApiKey -AuthScheme $AuthScheme -Models $Models -CreateIfMissing:$CreateIfMissing
+        $cfgResult = Write-DesktopConfig -BaseUrl $BaseUrl -ApiKey $ApiKey -AuthScheme $AuthScheme -Models $Models `
+            -WebSearchProvider $WebSearchProvider -WebSearchApiKey $WebSearchApiKey `
+            -WebSearchCustomUrl $WebSearchCustomUrl -CreateIfMissing:$CreateIfMissing
         $log.Add("Desktop config: $($cfgResult.ModelCount) models -> $($cfgResult.Path) ($($cfgResult.Bytes) bytes)")
+        if ($cfgResult.WebSearch -ne 'unchanged') { $log.Add("Desktop web search: $($cfgResult.WebSearch)") }
     }
 
     if ($ConfigureClaudeCode) {

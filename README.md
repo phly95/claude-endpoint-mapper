@@ -45,6 +45,9 @@ provider.
    - Blank tier → the model still appears in the picker, but is not bound to a slot
    - Friendly name → what Claude's model picker displays (Desktop only)
 7. Select targets (Claude Desktop / Claude Code) and press **Apply**.
+8. Optionally tick **Enable built-in web search** before applying — see
+   [Web search](#web-search). It runs the search inside Claude Desktop, so it
+   works even when your gateway does not.
 
 Applying to Claude Desktop will close and restart the app.
 
@@ -92,6 +95,8 @@ Two things are needed, and the tool does both automatically:
    An existing API key is preserved when you leave the key field blank — including
    a key Claude has stored in its sealed `__sealed__:v1:…` form, which the tool
    does not need to decrypt. Plaintext keys are accepted by the application as-is.
+   Optionally the tool also writes a `managedMcpServers` entry that turns on
+   Desktop's built-in web search — see [Web search](#web-search).
 
 2. **Validator patch.** Out of the box, Claude Desktop's bundled JavaScript only
    accepts Anthropic model names for tier slots and silently drops anything else.
@@ -105,6 +110,87 @@ Two things are needed, and the tool does both automatically:
    in `claude.exe`, all with byte-length-preserving edits so every archive offset
    stays valid. It verifies every entry afterwards and refuses to leave a broken
    install.
+
+## Web search
+
+Claude Code's built-in `WebSearch` tool is an **Anthropic server-side tool**: the
+API runs the search and returns the results. A gateway that does not execute the
+`web_search_20250305` server tool (most do not) hands back a client-side tool call
+instead, so Claude Code reports **"Did 0 searches"** and never sees results.
+
+Claude Desktop's third-party build ships a **built-in web-search connector** that
+runs the search in the app itself, so it does not depend on the gateway. The GUI
+can turn it on (the *Web search* section):
+
+1. Tick **Enable built-in web search**.
+2. Choose a provider: `tavily` (default), `brave`, `exa`, or `other`.
+3. Optionally enter an API key:
+   - **Tavily with no key** uses its free keyless mode.
+   - **Brave / Exa** require a key.
+   - **Other** points at your own search endpoint: enter its URL, plus a key if
+     it expects `Authorization: Bearer ...`.
+   - Leaving the key blank keeps the header already stored in the config.
+4. Apply.
+
+That writes a `managedMcpServers` entry into the Desktop config:
+
+```json
+"managedMcpServers": [
+  {
+    "name": "Web search",
+    "server": "websearch",
+    "provider": "tavily",
+    "headers": { "X-Tavily-Access-Mode": "keyless" },
+    "toolPolicy": { "web_search": "allow" }
+  }
+]
+```
+
+The `other` choice writes `"provider": "custom"` with a `customUrl` instead. That
+endpoint receives `POST {"q":"..."}` and must return
+`{"results":[{"title":...,"url":...,"snippet":...}]}`. Any headers you configure
+are forwarded with the request.
+
+In Code sessions started from Claude Desktop, the app aliases that server onto
+Claude Code's `WebSearch`, so the built-in tool starts returning results. Untick
+the box and Apply to remove the entry again; other `managedMcpServers` entries
+are preserved.
+
+CLI equivalent:
+
+```powershell
+# keyless Tavily
+Invoke-Apply -BaseUrl https://gateway.example.com -ApiKey $key -Models $models `
+  -WebSearchProvider tavily -ConfigureDesktop
+
+# with a vendor key (tavily / brave / exa)
+Invoke-Apply ... -WebSearchProvider brave -WebSearchApiKey $braveKey
+
+# your own search endpoint (provider "custom")
+Invoke-Apply ... -WebSearchProvider custom `
+  -WebSearchCustomUrl https://search.example.com/api -WebSearchApiKey $token
+
+# remove the built-in search entry
+Invoke-Apply ... -WebSearchProvider none
+
+# omit -WebSearchProvider (default 'keep') to leave the setting untouched
+```
+
+Keys are stored as plain headers in the local config file, so treat that file as
+a secret when you use one.
+
+For Claude Code **outside** Claude Desktop, `WebSearch` still goes through the
+gateway. Add an MCP search server instead — for example Tavily's remote server,
+which also works keyless:
+
+```powershell
+claude mcp add tavily --transport http https://mcp.tavily.com/mcp/ `
+  --header "X-Tavily-Access-Mode: keyless"
+```
+
+Then allow `mcp__tavily__tavily-search` in your permissions. Gateway operators
+can alternatively run LiteLLM's `websearch_interception`, which executes the
+search inside the proxy so the built-in tool keeps working unchanged.
 
 ## Backups and restoring
 
@@ -155,6 +241,10 @@ Useful cmdlets: `Get-ClaudeDesktopApp`, `Test-AsarPatched`,
 - **Models show in the picker but requests fail** — the endpoint must accept
   Anthropic-format requests for your model IDs. Check the base URL and auth
   scheme; some gateways expect `/v1` in the base URL.
+- **WebSearch says "Did 0 searches"** — the gateway is not executing Anthropic's
+  `web_search_20250305` server tool. Enable the built-in web search for Desktop,
+  or add an MCP search server for standalone Claude Code — see
+  [Web search](#web-search).
 - **After a Claude Desktop update, mappings are gone** — re-run Apply. The
   update replaced `app.asar` and `claude.exe`.
 

@@ -38,13 +38,14 @@ namespace EndpointMapper {
 $xaml = @'
 <Window xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
-        Title="Claude Endpoint Mapper" Width="920" Height="740"
-        MinWidth="780" MinHeight="600" WindowStartupLocation="CenterScreen">
+        Title="Claude Endpoint Mapper" Width="920" Height="860"
+        MinWidth="780" MinHeight="700" WindowStartupLocation="CenterScreen">
   <Grid Margin="12">
     <Grid.RowDefinitions>
       <RowDefinition Height="Auto"/>
       <RowDefinition Height="Auto"/>
       <RowDefinition Height="*"/>
+      <RowDefinition Height="Auto"/>
       <RowDefinition Height="Auto"/>
       <RowDefinition Height="170"/>
     </Grid.RowDefinitions>
@@ -97,6 +98,42 @@ $xaml = @'
               GridLinesVisibility="Horizontal" Margin="0,4,0,0"/>
 
     <Grid Grid.Row="3" Margin="0,8,0,0">
+      <GroupBox Header="Web search (Claude Desktop)" Padding="8">
+        <Grid>
+          <Grid.ColumnDefinitions>
+            <ColumnDefinition Width="Auto"/>
+            <ColumnDefinition Width="Auto"/>
+            <ColumnDefinition Width="Auto"/>
+            <ColumnDefinition Width="Auto"/>
+            <ColumnDefinition Width="*"/>
+          </Grid.ColumnDefinitions>
+          <Grid.RowDefinitions>
+            <RowDefinition Height="Auto"/>
+            <RowDefinition Height="Auto"/>
+            <RowDefinition Height="Auto"/>
+          </Grid.RowDefinitions>
+
+          <CheckBox x:Name="cbWebSearch" Content="Enable built-in web search"
+                    VerticalAlignment="Center" Margin="0,2,16,2"/>
+          <TextBlock Grid.Column="1" Text="Provider:" VerticalAlignment="Center" Margin="0,2,6,2"/>
+          <ComboBox Grid.Column="2" x:Name="cbSearchProvider" Width="110"
+                    VerticalContentAlignment="Center" Margin="0,2,12,2"/>
+          <TextBlock Grid.Column="3" Text="Key:" VerticalAlignment="Center" Margin="0,2,6,2"/>
+          <PasswordBox Grid.Column="4" x:Name="pbSearchKey" VerticalContentAlignment="Center" Margin="0,2,0,2"/>
+
+          <TextBlock Grid.Row="1" Grid.Column="0" Text="Other URL:" VerticalAlignment="Center"
+                     Margin="0,6,4,2"/>
+          <TextBox Grid.Row="1" Grid.Column="1" Grid.ColumnSpan="4" x:Name="tbSearchUrl"
+                   VerticalContentAlignment="Center" Margin="0,4,0,2"/>
+
+          <TextBlock Grid.Row="2" Grid.ColumnSpan="5" Foreground="#FF777777" TextWrapping="Wrap"
+                     Margin="0,4,0,0"
+                     Text="Runs inside Claude Desktop, so it works with any gateway. Tavily works without a key; Brave / Exa need one, and Other needs a URL that accepts POST {&quot;q&quot;:&quot;...&quot;} and returns {&quot;results&quot;:[{title,url,snippet}]}. Leave the key blank to keep the one already stored."/>
+        </Grid>
+      </GroupBox>
+    </Grid>
+
+    <Grid Grid.Row="4" Margin="0,8,0,0">
       <StackPanel Orientation="Horizontal" VerticalAlignment="Center">
         <CheckBox x:Name="cbDesktop" Content="Claude Desktop" IsChecked="True" Margin="0,0,14,0"/>
         <CheckBox x:Name="cbCode" Content="Claude Code (~/.claude/settings.json)" IsChecked="True" Margin="0,0,14,0"/>
@@ -107,7 +144,7 @@ $xaml = @'
               HorizontalAlignment="Right" FontWeight="SemiBold"/>
     </Grid>
 
-    <TextBox Grid.Row="4" x:Name="tbLog" IsReadOnly="True" VerticalScrollBarVisibility="Auto"
+    <TextBox Grid.Row="5" x:Name="tbLog" IsReadOnly="True" VerticalScrollBarVisibility="Auto"
              FontFamily="Consolas" FontSize="11" Margin="0,8,0,0"
              Background="#FF1E1E1E" Foreground="#FFDCDCDC"/>
   </Grid>
@@ -125,6 +162,10 @@ $btnAddRow  = $window.FindName('btnAddRow')
 $btnRemoveRow = $window.FindName('btnRemoveRow')
 $cbDesktop  = $window.FindName('cbDesktop')
 $cbCode     = $window.FindName('cbCode')
+$cbWebSearch = $window.FindName('cbWebSearch')
+$cbSearchProvider = $window.FindName('cbSearchProvider')
+$pbSearchKey = $window.FindName('pbSearchKey')
+$tbSearchUrl = $window.FindName('tbSearchUrl')
 $btnApply   = $window.FindName('btnApply')
 $tbLog      = $window.FindName('tbLog')
 
@@ -192,11 +233,24 @@ function Get-SelectedAuth {
 # ---- defaults --------------------------------------------------------------
 $cbAuth.ItemsSource = @('bearer', 'x-api-key')
 $cbAuth.SelectedIndex = 0
+$cbSearchProvider.ItemsSource = @('tavily', 'brave', 'exa', 'other')
+$cbSearchProvider.SelectedIndex = 0
 $cbEndpoint.ItemsSource = @(
     'http://localhost:4000',    # LiteLLM
     'http://localhost:3456',    # claude-code-router
     'https://api.anthropic.com'
 )
+
+function Update-SearchControls {
+    $on = [bool]$cbWebSearch.IsChecked -and [bool]$cbDesktop.IsChecked
+    $cbSearchProvider.IsEnabled = $on
+    $pbSearchKey.IsEnabled = $on
+    $tbSearchUrl.IsEnabled = $on -and "$($cbSearchProvider.SelectedItem)" -eq 'other'
+}
+$cbWebSearch.Add_Click({ Update-SearchControls })
+$cbSearchProvider.Add_SelectionChanged({ Update-SearchControls })
+$cbDesktop.Add_Click({ Update-SearchControls })
+Update-SearchControls
 
 # ---- prefill from existing config -----------------------------------------
 $cfgPath = $null
@@ -227,11 +281,29 @@ if ($cfgPath) {
                 if ($name) { [void](Add-Row $name $tier $label) }
             }
         }
+        if ($cfg.PSObject.Properties['managedMcpServers'] -and $cfg.managedMcpServers) {
+            $ws = @($cfg.managedMcpServers) | Where-Object { "$($_.server)" -eq 'websearch' } | Select-Object -First 1
+            if ($ws) {
+                $cbWebSearch.IsChecked = $true
+                $p = "$($ws.provider)"
+                if ($p -in @('tavily', 'brave', 'exa')) {
+                    $cbSearchProvider.SelectedItem = $p
+                } elseif ($p -eq 'custom') {
+                    $cbSearchProvider.SelectedItem = 'other'
+                    if ($ws.PSObject.Properties['customUrl'] -and $ws.customUrl) {
+                        $tbSearchUrl.Text = "$($ws.customUrl)"
+                    }
+                } elseif ($p) {
+                    Add-Log "Existing web search provider '$p' is not editable here; Apply will replace it."
+                }
+            }
+        }
     } catch {
         Add-Log "Could not prefill from config: $($_.Exception.Message)"
     }
 }
 if (-not $cbEndpoint.Text) { $cbEndpoint.SelectedIndex = 0 }
+Update-SearchControls
 
 # ---- status line -----------------------------------------------------------
 try {
@@ -316,14 +388,41 @@ $btnApply.Add_Click({
         return
     }
 
+    $wsProvider = 'none'
+    $wsCustomUrl = ''
+    if ($doDesktop -and [bool]$cbWebSearch.IsChecked) {
+        $choice = "$($cbSearchProvider.SelectedItem)"
+        if (-not $choice) { $choice = 'tavily' }
+        if ($choice -eq 'other') {
+            $wsCustomUrl = "$($tbSearchUrl.Text)".Trim()
+            if (-not $wsCustomUrl) {
+                Add-Log 'ERROR: Other web search needs a URL.'
+                return
+            }
+            if ($wsCustomUrl -notmatch '^https?://') {
+                Add-Log 'ERROR: the Other web search URL must start with http:// or https://'
+                return
+            }
+            $wsProvider = 'custom'
+        } else {
+            $wsProvider = $choice
+        }
+        if ($wsProvider -in @('brave', 'exa') -and -not $pbSearchKey.Password) {
+            Add-Log "ERROR: $wsProvider web search needs an API key."
+            return
+        }
+    }
+
     $btnApply.IsEnabled = $false
     $btnFetch.IsEnabled = $false
     $window.Cursor = [System.Windows.Input.Cursors]::Wait
     try {
-        Add-Log "Applying: $($models.Count) model(s), desktop=$doDesktop, code=$doCode ..."
+        Add-Log "Applying: $($models.Count) model(s), desktop=$doDesktop, code=$doCode, websearch=$wsProvider ..."
         if ($doDesktop) { Add-Log 'Note: Claude Desktop will be closed for patching.' }
         $res = Invoke-Apply -BaseUrl $url -ApiKey $pbKey.Password -AuthScheme (Get-SelectedAuth) `
-            -Models $models -ConfigureDesktop:$doDesktop -ConfigureClaudeCode:$doCode -RestartDesktop -CreateIfMissing
+            -Models $models -WebSearchProvider $wsProvider -WebSearchApiKey $pbSearchKey.Password `
+            -WebSearchCustomUrl $wsCustomUrl `
+            -ConfigureDesktop:$doDesktop -ConfigureClaudeCode:$doCode -RestartDesktop -CreateIfMissing
         foreach ($m in $res.Messages) { Add-Log $m }
         Add-Log 'Done.'
         if ($doDesktop) {
