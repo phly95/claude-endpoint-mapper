@@ -132,9 +132,16 @@ class App(tk.Tk):
         tgt = ttk.Frame(self)
         tgt.pack(fill="x", **pad)
         self.code = tk.BooleanVar(value=True)
-        ttk.Checkbutton(tgt, text="Claude Code (~/.claude/settings.json)", variable=self.code).pack(side="left")
-        ttk.Label(tgt, text="Applying switches Claude Desktop to this gateway and restarts it.").pack(side="left", padx=14)
-        self.apply_btn = ttk.Button(self, text="Apply and restart Claude Desktop", command=self._apply)
+        ttk.Checkbutton(tgt, text="Claude Code too (its settings.json)", variable=self.code).pack(side="left")
+        ttk.Label(tgt, text="Applying restarts the app it configures.").pack(side="left", padx=14)
+        sep = ttk.Frame(self)
+        sep.pack(fill="x", **pad)
+        self.separate = tk.BooleanVar(value=True)
+        ttk.Checkbutton(
+            sep, variable=self.separate,
+            text=f"Separate launcher: claude-{em_config.PROFILE} (own profile; leaves your normal "
+                 "Claude Desktop and ~/.claude alone)").pack(side="left")
+        self.apply_btn = ttk.Button(self, text="Apply and restart", command=self._apply)
         self.apply_btn.pack(**pad)
 
         self.log = tk.Text(self, height=9, state="disabled", wrap="word")
@@ -182,7 +189,8 @@ class App(tk.Tk):
 
     def _prefill(self):
         try:
-            pre = em_config.read_prefill(em_config.userdata_3p())
+            pre = (em_config.read_prefill(em_config.userdata_3p(em_config.PROFILE))
+                   or em_config.read_prefill(em_config.userdata_3p()))
         except ValueError as e:
             self._log(f"Existing config not read: {e}")
             return
@@ -203,7 +211,7 @@ class App(tk.Tk):
             elif ws["provider"] == "custom":
                 self.ws_provider.set("other")
                 self.ws_url.set(ws["custom_url"])
-        self._log("Loaded the existing Claude Desktop gateway config.")
+        self._log("Loaded the existing gateway config.")
 
     # --------------------------------------------------------------- actions --
     def _fetch(self):
@@ -248,7 +256,7 @@ class App(tk.Tk):
             argv, stdin = em_form.build_apply_request(
                 self.url.get(), self.auth.get(), self.key.get(), [r.as_dict() for r in self.rows],
                 self.code.get(), self.ws_on.get(), self.ws_provider.get(), self.ws_key.get(),
-                self.ws_url.get())
+                self.ws_url.get(), separate=self.separate.get())
         except ValueError as e:
             self._log(str(e))
             return
@@ -278,7 +286,7 @@ class App(tk.Tk):
             self.key.set("")
             self.ws_key.set("")
             self.key_hint.config(text="A key is already saved. Leave blank to keep it.")
-            self._log("Done. Claude Desktop was restarted.")
+            self._log("Done. Restarted.")
         else:
             self._log("Apply failed; see above.")
 

@@ -213,6 +213,81 @@ class FailedApplyTests(CliCase):
         self.spawn.assert_not_called()
 
 
+class SeparateLauncherTests(CliCase):
+    @property
+    def sep3p(self):
+        return self.home / ".config" / "Claude-gateway-3p"
+
+    @property
+    def sep_code(self):
+        return self.home / ".claude-gateway" / "settings.json"
+
+    def sep_config(self):
+        meta = json.loads((self.sep3p / "configLibrary" / "_meta.json").read_text())
+        return json.loads((self.sep3p / "configLibrary" / (meta["appliedId"] + ".json")).read_text())
+
+    def test_apply_separate_writes_its_own_profile_and_a_launcher(self):
+        rc, out, err = self.apply("--separate")
+        self.assertEqual(rc, 0, err)
+        self.assertEqual(self.sep_config()["inferenceGatewayBaseUrl"], "https://gw.example.com")
+        self.assertIs(json.loads((self.sep3p / "claude-desktop-extra.json").read_text())
+                      ["allowNonAnthropicModels"], True)
+        self.assertIn("ANTHROPIC_BASE_URL", json.loads(self.sep_code.read_text())["env"])
+        self.assertTrue((self.home / ".local" / "bin" / "claude-gateway").exists())
+        self.assertTrue((self.home / ".local" / "share" / "applications"
+                         / "com.anthropic.Claude-gateway.desktop").exists())
+        # the normal Claude Desktop and Claude Code are left alone
+        self.assertFalse(self.user3p.exists())
+        self.assertFalse((self.home / ".claude").exists())
+
+    def test_separate_restart_stops_only_the_gateway_profile(self):
+        self.stop.return_value = [7]
+        rc, out, err = self.apply("--separate", "--restart")
+        self.assertEqual(rc, 0, err)
+        self.assertEqual(str(self.stop.call_args.args[0]), str(self.home / ".config" / "Claude-gateway"))
+        self.assertIs(self.stop.call_args.kwargs["default_profile"], False)
+        self.spawn.assert_called_once_with([str(self.home / ".local" / "bin" / "claude-gateway")])
+
+    def test_default_restart_still_targets_the_default_profile(self):
+        self.apply("--restart")
+        self.assertIs(self.stop.call_args.kwargs["default_profile"], True)
+        self.assertFalse((self.home / ".local" / "bin" / "claude-gateway").exists())
+
+    def test_separate_without_restart_prints_the_launcher_name(self):
+        rc, out, _ = self.apply("--separate")
+        self.assertIn("claude-gateway", out)
+        self.spawn.assert_not_called()
+
+    def test_failed_separate_apply_stops_nothing_and_writes_nothing(self):
+        self.sep3p.mkdir(parents=True)
+        (self.sep3p / "claude-desktop-extra.json").write_text("{bad")
+        rc, _, err = self.apply("--separate", "--restart")
+        self.assertEqual(rc, 1)
+        self.assertIn("nothing was written", err)
+        self.stop.assert_not_called()
+        self.assertFalse((self.sep3p / "configLibrary").exists())
+        self.assertFalse((self.home / ".local").exists())
+
+    def test_status_separate_reports_the_gateway_profile(self):
+        rc, out, _ = self.run_cli("status", "--separate")
+        self.assertIn("desktop_config: missing", out)
+        self.assertIn("launcher: missing", out)
+        self.apply("--separate")
+        rc, out, _ = self.run_cli("status", "--separate")
+        self.assertIn("models: 2", out)
+        self.assertIn("launcher: present", out)
+        _, default_out, _ = self.run_cli("status")
+        self.assertIn("desktop_config: missing", default_out)  # the normal profile is untouched
+
+    def test_uninstall_also_removes_the_launcher_and_keeps_the_profile(self):
+        self.apply("--separate")
+        rc, out, err = self.run_cli("uninstall")
+        self.assertEqual(rc, 0, err)
+        self.assertFalse((self.home / ".local" / "bin" / "claude-gateway").exists())
+        self.assertTrue((self.sep3p / "configLibrary" / "_meta.json").exists())
+        self.assertIn(str(self.sep3p), out)
+
+
 class OtherCommandTests(CliCase):
     def test_install_puts_the_gui_in_the_menu_without_touching_claude(self):
         rc, out, err = self.run_cli("install")

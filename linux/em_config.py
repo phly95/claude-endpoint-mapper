@@ -24,6 +24,7 @@ SYSTEM_ASAR = "/usr/lib/claude-desktop/resources/app.asar"
 _SWITCH_MARKER = b"__CDB_ALLOW_NONANTHROPIC__"
 _EXTRA_KEY = "allowNonAnthropicModels"
 USER_AGENT = "claude-endpoint-mapper/1.0"
+PROFILE = "gateway"  # the separate launcher: claude-gateway, profile data in Claude-gateway[-3p]
 
 
 # ------------------------------------------------------------------ helpers --
@@ -83,15 +84,15 @@ def commit(*plans) -> None:
             _write_json(path, obj, mode)
 
 
-def userdata() -> pathlib.Path:
-    """Claude Desktop's data dir for the default profile."""
+def userdata(profile=None) -> pathlib.Path:
+    """Claude Desktop's data dir: the default profile, or a named one (--profile=NAME)."""
     base = os.environ.get("XDG_CONFIG_HOME") or str(pathlib.Path.home() / ".config")
-    return pathlib.Path(base) / "Claude"
+    return pathlib.Path(base) / (f"Claude-{profile}" if profile else "Claude")
 
 
-def userdata_3p() -> pathlib.Path:
+def userdata_3p(profile=None) -> pathlib.Path:
     """Where the app keeps third-party (gateway) state once it runs in 3p mode."""
-    d = userdata()
+    d = userdata(profile)
     return d.with_name(d.name + "-3p")
 
 

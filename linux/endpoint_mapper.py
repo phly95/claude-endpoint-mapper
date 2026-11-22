@@ -35,6 +35,15 @@ def _share_dir() -> pathlib.Path:
     return _data_dir() / "claude-endpoint-mapper"
 
 
+def _profile(args):
+    """None = the normal Claude Desktop, else the separate launcher's profile."""
+    return em_config.PROFILE if getattr(args, "separate", False) else None
+
+
+def _label(profile) -> str:
+    return f"Claude {profile.capitalize()}" if profile else "Claude Desktop"
+
+
 def _asar() -> str:
     return os.environ.get("EM_ASAR") or em_config.SYSTEM_ASAR
 
@@ -75,12 +84,14 @@ def cmd_apply(args) -> int:
     models = [_parse_model(m) for m in args.model]
     key = _read_secret(args.key_stdin)
     ws_key = _read_secret(args.web_search_key_stdin)
+    profile = _profile(args)
+    label = _label(profile)
     code_path = None
     if not args.no_code:
         code_path = pathlib.Path(args.code_settings) if args.code_settings \
-            else _home() / ".claude" / "settings.json"
-    userdata = em_config.userdata()
-    user_dir = em_config.userdata_3p()
+            else _home() / (f".claude-{profile}" if profile else ".claude") / "settings.json"
+    userdata = em_config.userdata(profile)
+    user_dir = em_config.userdata_3p(profile)
 
     def make_plans():
         # Validates every input and every existing file; touches nothing.
@@ -96,11 +107,12 @@ def cmd_apply(args) -> int:
 
     plans = make_plans()  # fails here, before anything is stopped or written
     if args.restart:
-        stopped = em_desktop.stop(userdata)
+        stopped = em_desktop.stop(userdata, default_profile=profile is None)
         if stopped:
-            print(f"Stopped Claude Desktop ({len(stopped)} processes).")
+            print(f"Stopped {label} ({len(stopped)} processes).")
             plans = make_plans()  # the app may have rewritten its config while quitting
-    running_before = not args.restart and bool(em_desktop.find_pids(userdata))
+    running_before = not args.restart and bool(
+        em_desktop.find_pids(userdata, default_profile=profile is None))
     em_config.commit(*plans.values())
 
     cfg, extra = plans["desktop"].result, plans["extra"].result
@@ -112,22 +124,31 @@ def cmd_apply(args) -> int:
         print("warning: " + extra["warning"], file=sys.stderr)
     if code_path is not None:
         print(f"Claude Code settings: {code_path}")
+    start_cmd = [em_desktop.desktop_command()]
+    if profile:
+        files = em_desktop.write_launcher(_bin_dir(), _apps_dir(), profile)
+        print(f"Launcher: {files['script']}")
+        print(f"Menu entry: {files['desktop']}")
+        start_cmd = [files["script"]]
 
     if args.restart:
-        _spawn([em_desktop.desktop_command()])
-        print("Started Claude Desktop.")
+        _spawn(start_cmd)
+        print(f"Started {label}.")
     elif running_before:
-        print("Claude Desktop is running: restart it to apply (apply --restart).")
+        print(f"{label} is running: restart it to apply (apply --restart).")
+    elif profile:
+        print(f"Start it with: claude-{profile}")
     else:
         print("Start Claude Desktop to use the gateway.")
     return 0
 
 
 def cmd_status(args) -> int:
+    profile = _profile(args)
     asar = _asar()
     print("native_switch: " + ("yes" if em_config.has_native_switch(asar)
                                else f"NO (not found in {asar})"))
-    user_dir = em_config.userdata_3p()
+    user_dir = em_config.userdata_3p(profile)
     try:
         state = em_config.read_desktop_state(user_dir)
     except ValueError as e:
@@ -142,7 +163,10 @@ def cmd_status(args) -> int:
             print("key: " + ("set" if state["has_key"] else "missing"))
             print("web_search: " + ("on" if state["web_search"] else "off"))
     print(f"extra_pref: {em_config.read_extra_pref(user_dir)}")
-    pids = em_desktop.find_pids(em_config.userdata())
+    if profile:
+        script = _bin_dir() / f"claude-{profile}"
+        print("launcher: " + ("present" if script.exists() else "missing"))
+    pids = em_desktop.find_pids(em_config.userdata(profile), default_profile=profile is None)
     print("running: " + (f"yes (pids {', '.join(map(str, pids))})" if pids else "no"))
     return 0
 
@@ -159,13 +183,18 @@ def cmd_install(args) -> int:
 
 def cmd_uninstall(args) -> int:
     removed = em_desktop.remove_gui(_share_dir(), _bin_dir(), _apps_dir())
+    removed += em_desktop.remove_launcher(_bin_dir(), _apps_dir(), em_config.PROFILE)
     for p in removed:
         print(f"Removed {p}")
     if not removed:
         print("Nothing to remove.")
-    print("Kept (Claude Desktop's gateway setup; to go back to your normal account run: "
-          "claude-desktop --1p):")
-    print(f"  {em_config.userdata_3p()}")
+    kept = [d for d in (em_config.userdata_3p(), em_config.userdata_3p(em_config.PROFILE),
+                        _home() / f".claude-{em_config.PROFILE}") if d.exists()]
+    if kept:
+        print("Kept (gateway setup and logins; delete them yourself if you want them gone;")
+        print("to put your normal Claude Desktop back on your account run: claude-desktop --1p):")
+        for d in kept:
+            print(f"  {d}")
     return 0
 
 
@@ -194,15 +223,19 @@ def build_parser() -> argparse.ArgumentParser:
     sp.add_argument("--code-settings", metavar="PATH",
                     help="Claude Code settings file (default ~/.claude/settings.json)")
     sp.add_argument("--restart", action="store_true", help="stop Claude Desktop, apply, start it again")
+    sp.add_argument("--separate", action="store_true",
+                    help=f"configure a separate launcher (claude-{em_config.PROFILE}) with its own "
+                         "profile and leave the normal Claude Desktop and ~/.claude alone")
     sp.set_defaults(func=cmd_apply)
 
     sp = sub.add_parser("status", help="show what is installed and configured")
+    sp.add_argument("--separate", action="store_true", help="report the separate launcher's profile")
     sp.set_defaults(func=cmd_status)
 
     sp = sub.add_parser("install", help="add the configurator (GUI) to the application menu")
     sp.set_defaults(func=cmd_install)
 
-    sp = sub.add_parser("uninstall", help="remove the installed configurator and its menu entry")
+    sp = sub.add_parser("uninstall", help="remove the configurator and the separate launcher (menu entries and commands)")
     sp.set_defaults(func=cmd_uninstall)
     return p
 

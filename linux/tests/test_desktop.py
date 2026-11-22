@@ -68,6 +68,74 @@ class FindPidsTests(TmpCase):
         self.assertEqual(self.find(), [])
 
 
+class NamedProfilePidTests(TmpCase):
+    UD = pathlib.Path("/home/u/.config/Claude-gateway")
+
+    def setUp(self):
+        self.root = self.tmp()
+
+    def proc(self, pid, exe, *args):
+        d = self.root / str(pid)
+        d.mkdir()
+        (d / "cmdline").write_bytes(b"\0".join(a.encode() for a in args) + b"\0")
+        os.symlink(exe, d / "exe")
+
+    def test_named_profile_never_matches_the_default_main_process(self):
+        self.proc(101, ELECTRON, ELECTRON, f"--user-data-dir={self.UD}")                    # named main
+        self.proc(102, ELECTRON, ELECTRON, "--type=gpu-process", f"--user-data-dir={self.UD}-3p")
+        self.proc(103, ELECTRON, ELECTRON, "--ozone-platform=wayland")                       # DEFAULT main
+        self.proc(104, ELECTRON, ELECTRON, "--type=utility", "--user-data-dir=/home/u/.config/Claude")
+        self.proc(105, ELECTRON, ELECTRON, "--type=zygote")
+        self.proc(106, "/home/u/.local/bin/claude", "claude")
+        pids = em_desktop.find_pids(self.UD, proc_root=str(self.root), default_profile=False)
+        self.assertEqual(pids, [101, 102])
+
+    def test_default_profile_ignores_the_named_profile(self):
+        self.proc(201, ELECTRON, ELECTRON, f"--user-data-dir={self.UD}")
+        self.proc(202, ELECTRON, ELECTRON, "--ozone-platform=wayland")
+        self.assertEqual(em_desktop.find_pids(UD, proc_root=str(self.root)), [202])
+
+    def test_stop_passes_default_profile_through(self):
+        with mock.patch.object(em_desktop, "find_pids", return_value=[]) as fp:
+            em_desktop.stop(self.UD, timeout=1, default_profile=False)
+        self.assertIs(fp.call_args.kwargs["default_profile"], False)
+
+
+class LauncherFileTests(TmpCase):
+    def test_write_launcher_script_and_desktop(self):
+        bin_dir, apps = self.tmp() / "bin", self.tmp() / "apps"
+        res = em_desktop.write_launcher(bin_dir, apps, "gateway")
+        script, desktop = pathlib.Path(res["script"]), pathlib.Path(res["desktop"])
+        self.assertEqual(script, bin_dir / "claude-gateway")
+        self.assertTrue(os.access(script, os.X_OK))
+        body = script.read_text()
+        self.assertTrue(body.startswith("#!/usr/bin/env bash"))
+        self.assertIn("--profile=gateway --3p", body)
+        self.assertNotIn("CLAUDE_ELECTRON", body)
+        self.assertEqual(desktop, apps / "com.anthropic.Claude-gateway.desktop")
+        d = desktop.read_text()
+        self.assertIn("Name=Claude Gateway", d)
+        self.assertIn(f"Exec={script} %U", d)
+        self.assertIn("StartupWMClass=com.anthropic.Claude-gateway", d)
+        self.assertIn("Type=Application", d)
+        self.assertNotIn("MimeType=", d)  # claude:// stays with the normal Claude Desktop
+
+    def test_write_launcher_is_idempotent_and_quotes_paths_with_spaces(self):
+        bin_dir, apps = self.tmp() / "my bin", self.tmp() / "apps"
+        em_desktop.write_launcher(bin_dir, apps, "gateway")
+        first = (bin_dir / "claude-gateway").read_text()
+        res = em_desktop.write_launcher(bin_dir, apps, "gateway")
+        self.assertEqual((bin_dir / "claude-gateway").read_text(), first)
+        self.assertIn(f'Exec="{bin_dir}/claude-gateway" %U', pathlib.Path(res["desktop"]).read_text())
+
+    def test_remove_launcher(self):
+        bin_dir, apps = self.tmp() / "bin", self.tmp() / "apps"
+        res = em_desktop.write_launcher(bin_dir, apps, "gateway")
+        removed = em_desktop.remove_launcher(bin_dir, apps, "gateway")
+        self.assertEqual(sorted(removed), sorted([res["script"], res["desktop"]]))
+        self.assertEqual(em_desktop.remove_launcher(bin_dir, apps, "gateway"), [])
+
+
 class StopTests(TmpCase):
     def spawn(self, code):
         p = subprocess.Popen([sys.executable, "-c", code])

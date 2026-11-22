@@ -68,6 +68,12 @@ class BuildRequestTests(unittest.TestCase):
         argv, _ = self.build(code=True)
         self.assertNotIn("--no-code", argv)
 
+    def test_separate_launcher_flag(self):
+        argv, _ = self.build()
+        self.assertNotIn("--separate", argv)
+        argv, _ = self.build(separate=True)
+        self.assertIn("--separate", argv)
+
     def test_x_api_key_auth(self):
         argv, _ = self.build(auth="x-api-key")
         self.assertEqual(argv[argv.index("--auth") + 1], "x-api-key")

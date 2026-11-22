@@ -26,7 +26,8 @@ only). The Windows instructions follow below this section.
 **Applying switches your Claude Desktop to the gateway.** It then runs in
 third-party mode, without the Anthropic sign-in, and `--restart` closes and
 restarts it (open sessions end). To go back to your normal account run
-`claude-desktop --1p`.
+`claude-desktop --1p`. To leave your normal Claude Desktop alone, use the
+[separate launcher](#separate-launcher) instead.
 
 ### How it works
 
@@ -40,6 +41,27 @@ restarts it (open sessions end). To go back to your normal account run
   shows `native_switch: NO`).
 - Claude Code gets the same endpoint and models through `env` in
   `~/.claude/settings.json` (skip with `--no-code`).
+
+### Separate launcher
+
+`apply --separate` (the GUI's **Separate launcher** box, ticked by default) configures
+a second, independent Claude Desktop instead of your normal one:
+
+- a `claude-gateway` command and a "Claude Gateway" menu entry that run
+  `claude-desktop --profile=gateway --3p`
+- its own data in `~/.config/Claude-gateway` and `~/.config/Claude-gateway-3p`, its own
+  login, and Claude Code settings in `~/.claude-gateway/settings.json`
+- your normal Claude Desktop, its login, your chats and `~/.claude` are not touched;
+  `--restart` stops and starts only the separate one, and its menu entry does not take
+  over `claude://` links
+
+```bash
+python3 linux/endpoint_mapper.py apply --separate --url https://gateway.example.com --key-stdin \
+  --model vendor-model-a=sonnet=Sonnet --restart <<<"$KEY"
+python3 linux/endpoint_mapper.py status --separate
+```
+
+`uninstall` removes the command and menu entry and keeps the profile data.
 
 ### Requirements
 
@@ -84,14 +106,16 @@ python3 linux/endpoint_mapper.py apply --url https://gateway.example.com --key-s
 - `--no-code` skips Claude Code settings; `--code-settings PATH` writes them elsewhere.
 - `--restart` stops Claude Desktop, applies, and starts it again. Without it a
   running Claude Desktop keeps its old config until you restart it.
+- `--separate` targets the [separate launcher](#separate-launcher) instead of your
+  normal Claude Desktop.
 
 ```bash
 python3 linux/endpoint_mapper.py status      # switch present? config? running?
-python3 linux/endpoint_mapper.py uninstall   # removes the installed configurator and its menu entry
+python3 linux/endpoint_mapper.py uninstall   # removes the configurator and the separate launcher
 ```
 
-`uninstall` keeps the gateway setup in `~/.config/Claude-3p`; run
-`claude-desktop --1p` to return to your normal account.
+`uninstall` keeps the gateway setup and logins; run `claude-desktop --1p` to put
+your normal Claude Desktop back on your account.
 
 Run the tests with `python3 -m unittest discover -s linux/tests -t linux`.
 

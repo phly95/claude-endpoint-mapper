@@ -14,7 +14,8 @@ def guess_tier(model_id: str) -> str:
 
 
 def build_apply_request(url: str, auth: str, key: str, rows: list, code: bool,
-                        ws_enabled: bool, ws_provider: str, ws_key: str, ws_url: str):
+                        ws_enabled: bool, ws_provider: str, ws_key: str, ws_url: str,
+                        separate: bool = False):
     """Return (argv for `endpoint_mapper.py`, stdin text carrying the keys)."""
     url = (url or "").strip()
     if not url:
@@ -54,5 +55,7 @@ def build_apply_request(url: str, auth: str, key: str, rows: list, code: bool,
         argv += ["--web-search", "none"]
     if not code:
         argv.append("--no-code")
+    if separate:
+        argv.append("--separate")
     argv.append("--restart")
     return argv, stdin

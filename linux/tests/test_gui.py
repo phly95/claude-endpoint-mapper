@@ -60,6 +60,24 @@ class GuiTests(unittest.TestCase):
         self.assertIn("Enter the API key", self.log_text())
         self.assertEqual(str(self.app.apply_btn.cget("state")), "normal")
 
+    def apply_and_get_argv(self):
+        self.app.url.set("http://gw.test")
+        self.app.key.set("k")
+        self.app._add_row("m", "", "")
+        done = mock.Mock(returncode=0, stdout="ok", stderr="")
+        with mock.patch.object(self.gui.subprocess, "run", return_value=done) as run:
+            self.app._apply()
+            self.assertTrue(self.pump(lambda: "Done." in self.log_text()), self.log_text())
+        return run.call_args.args[0]
+
+    def test_separate_launcher_is_ticked_by_default_and_passed_to_the_cli(self):
+        self.assertTrue(self.app.separate.get())
+        self.assertIn("--separate", self.apply_and_get_argv())
+
+    def test_unticking_separate_applies_to_the_normal_claude_desktop(self):
+        self.app.separate.set(False)
+        self.assertNotIn("--separate", self.apply_and_get_argv())
+
 
 if __name__ == "__main__":
     unittest.main()

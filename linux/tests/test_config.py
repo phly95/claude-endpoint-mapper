@@ -111,6 +111,14 @@ class PathTests(unittest.TestCase):
             self.assertEqual(em_config.userdata(), pathlib.Path("/x/cfg/Claude"))
             self.assertEqual(em_config.userdata_3p(), pathlib.Path("/x/cfg/Claude-3p"))
 
+    def test_named_profile_dirs(self):
+        with mock.patch.dict(os.environ, {"XDG_CONFIG_HOME": "/x/cfg"}):
+            self.assertEqual(em_config.userdata("gateway"), pathlib.Path("/x/cfg/Claude-gateway"))
+            self.assertEqual(em_config.userdata_3p("gateway"), pathlib.Path("/x/cfg/Claude-gateway-3p"))
+
+    def test_separate_launcher_profile_name(self):
+        self.assertEqual(em_config.PROFILE, "gateway")
+
     def test_userdata_dirs_default_to_home_config(self):
         env = {k: v for k, v in os.environ.items() if k != "XDG_CONFIG_HOME"}
         with mock.patch.dict(os.environ, env, clear=True):
