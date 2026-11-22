@@ -63,6 +63,7 @@ merging with your existing settings:
 | `ANTHROPIC_DEFAULT_OPUS_MODEL` | model mapped to `opus` |
 | `ANTHROPIC_DEFAULT_HAIKU_MODEL` | model mapped to `haiku` |
 | `ANTHROPIC_DEFAULT_FABLE_MODEL` | model mapped to `fable` |
+| `ANTHROPIC_DEFAULT_MYTHOS_MODEL` | model mapped to `mythos` |
 
 Nothing else in the file is touched. Slots you leave blank are left as they were
 (or removed when a previously set model is cleared).
@@ -136,7 +137,7 @@ Invoke-Apply -BaseUrl https://gateway.example.com -ApiKey $key -AuthScheme beare
   -Models @(
     @{ Name = 'vendor-model-a'; Tier = 'sonnet'; Label = 'Sonnet' },
     @{ Name = 'vendor-model-b'; Tier = 'opus';   Label = 'Opus'   }
-  ) -ConfigureDesktop -ConfigureClaudeCode -RestartDesktop
+  ) -ConfigureDesktop -ConfigureClaudeCode -RestartDesktop -CreateIfMissing
 ```
 
 Useful cmdlets: `Get-ClaudeDesktopApp`, `Test-AsarPatched`,

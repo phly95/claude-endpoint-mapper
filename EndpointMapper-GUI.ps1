@@ -170,6 +170,7 @@ function Guess-Tier([string]$Id) {
     if ($l.Contains('sonnet')) { return 'sonnet' }
     if ($l.Contains('opus'))   { return 'opus' }
     if ($l.Contains('fable'))  { return 'fable' }
+    if ($l.Contains('mythos')) { return 'mythos' }
     return ''
 }
 
@@ -192,10 +193,9 @@ function Get-SelectedAuth {
 $cbAuth.ItemsSource = @('bearer', 'x-api-key')
 $cbAuth.SelectedIndex = 0
 $cbEndpoint.ItemsSource = @(
-    'https://tokenharbor.ai',
-    'https://api.anthropic.com',
     'http://localhost:4000',    # LiteLLM
-    'http://localhost:3456'     # claude-code-router
+    'http://localhost:3456',    # claude-code-router
+    'https://api.anthropic.com'
 )
 
 # ---- prefill from existing config -----------------------------------------
@@ -238,7 +238,7 @@ try {
     $app = Get-ClaudeDesktopApp
     $ps = Test-AsarPatched -AsarPath $app.Asar
     $state = if ($ps.GatewayOk) { 'patched' } else { 'NOT patched' }
-    $tbStatus.Text = "Claude Desktop $($app.Version): validator $state.  Config: $(if ($cfgPath) { Split-Path $cfgPath -Leaf } else { 'none found' })."
+    $tbStatus.Text = "Claude Desktop $($app.Version): validator $state.  Config: $(if ($cfgPath) { Split-Path $cfgPath -Leaf } else { 'none found (will be created on Apply)' })."
 } catch {
     $tbStatus.Text = "Claude Desktop not found ($($_.Exception.Message)) - Desktop target will be unavailable."
     $cbDesktop.IsChecked = $false
@@ -320,14 +320,16 @@ $btnApply.Add_Click({
     $btnFetch.IsEnabled = $false
     $window.Cursor = [System.Windows.Input.Cursors]::Wait
     try {
-        Add-Log "Applying: $models model(s), desktop=$doDesktop, code=$doCode ..."
+        Add-Log "Applying: $($models.Count) model(s), desktop=$doDesktop, code=$doCode ..."
         if ($doDesktop) { Add-Log 'Note: Claude Desktop will be closed for patching.' }
         $res = Invoke-Apply -BaseUrl $url -ApiKey $pbKey.Password -AuthScheme (Get-SelectedAuth) `
-            -Models $models -ConfigureDesktop:$doDesktop -ConfigureClaudeCode:$doCode -RestartDesktop
+            -Models $models -ConfigureDesktop:$doDesktop -ConfigureClaudeCode:$doCode -RestartDesktop -CreateIfMissing
         foreach ($m in $res.Messages) { Add-Log $m }
         Add-Log 'Done.'
-        $ps = Test-AsarPatched -AsarPath (Get-ClaudeDesktopApp).Asar
-        Add-Log ("Validator patch check: {0}" -f $(if ($ps.GatewayOk) { 'OK' } else { 'FAILED' }))
+        if ($doDesktop) {
+            $ps = Test-AsarPatched -AsarPath (Get-ClaudeDesktopApp).Asar
+            Add-Log ("Validator patch check: {0}" -f $(if ($ps.GatewayOk) { 'OK' } else { 'FAILED' }))
+        }
     } catch {
         Add-Log "ERROR: $($_.Exception.Message)"
         [void][System.Windows.MessageBox]::Show($window, $_.Exception.Message, 'Apply failed', 'OK', 'Error')

@@ -111,7 +111,8 @@ function Repair-AsarPatch {
     $s = $enc.GetString($bytes)
 
     # --- pass 1: provider switch ('gateway' / 'mantle' must return {ok:true}) ---
-    $gwRe      = [regex]'case"gateway":case"mantle":return[ \t]*[$A-Za-z_][\w$]*\([$\w]+\)'
+    # Capture only the return expression so the case labels remain intact.
+    $gwRe      = [regex]'case"gateway":case"mantle":(return[ \t]*[$A-Za-z_][\w$]*\([$\w]+\))'
     $gwDoneRe  = [regex]'case"gateway":case"mantle":return[ \t]*\{ok:'
 
     if ($gwDoneRe.IsMatch($s)) { $report.GatewayAlreadyOk = $true }
@@ -123,13 +124,15 @@ function Repair-AsarPatch {
     # splice from the end so earlier indices stay valid
     for ($i = $gwMatches.Count - 1; $i -ge 0; $i--) {
         $m = $gwMatches[$i]
-        $repl = Get-GatewayReplacement -OriginalLength $m.Length
+        $retGroup = $m.Groups[1]
+        $repl = Get-GatewayReplacement -OriginalLength $retGroup.Length
         if (-not $repl) {
-            $report.Warnings.Add("gateway/mantle switch at offset $($m.Index) is shorter than supported; skipped.")
+            $report.Warnings.Add("gateway/mantle return expression at offset $($retGroup.Index) is shorter than supported ($($retGroup.Length) bytes); skipped.")
             continue
         }
         $nb = $enc.GetBytes($repl)
-        [Array]::Copy($nb, 0, $bytes, $m.Index, $nb.Length)
+        if ($nb.Length -ne $retGroup.Length) { throw "Internal length mismatch patching gateway switch at offset $($retGroup.Index)" }
+        [Array]::Copy($nb, 0, $bytes, $retGroup.Index, $nb.Length)
         $report.GatewayPatched++
     }
     if ($report.GatewayPatched -gt 0) { $s = $enc.GetString($bytes) }
@@ -145,8 +148,9 @@ function Repair-AsarPatch {
         if ($seen.ContainsKey($fn)) { continue }
         $seen[$fn] = $true
 
-        $neuteredRe = [regex]('function ' + $fn + '\(e\)\{return!1\}')
-        $defRe      = [regex]('function ' + $fn + '\(e\)\{return [$\w]+\.test\(e\.toLowerCase\(\)\)\}')
+        $fnEsc      = [regex]::Escape($fn)
+        $neuteredRe = [regex]('function ' + $fnEsc + '\([$\w]+\)\{return!1\}')
+        $defRe      = [regex]('function ' + $fnEsc + '\(([$\w]+)\)\{return [^{};]{1,400}?\.test\(\1\.toLowerCase\(\)\)\}')
 
         $dm = $defRe.Match($s)
         if (-not $dm.Success) {
@@ -154,7 +158,8 @@ function Repair-AsarPatch {
             else { $report.Warnings.Add("Blocklist function '$fn' not found in expected shape; its tier gate may still reject non-Anthropic models.") }
             continue
         }
-        $base = "function $fn(e){return!1}"
+        $paramName = $dm.Groups[1].Value
+        $base = "function $fn($paramName){return!1}"
         $pad = $dm.Length - $base.Length - 4      # -4 for /* and */
         if ($pad -lt 0) {
             $report.Warnings.Add("Blocklist definition for '$fn' shorter than expected; skipped.")
@@ -181,7 +186,8 @@ function Repair-AsarPatch {
     $report.GatewayOk = ($unpatched.Count -eq 0 -and $gwDoneRe.IsMatch($check))
     $report.BlocklistClean = $true
     foreach ($fn in $seen.Keys) {
-        $stillActive = ([regex]("function " + $fn + "\(e\)\{return [$\w]+\.test\(e\.toLowerCase\(\)\)\}")).IsMatch($check)
+        $fnEsc = [regex]::Escape($fn)
+        $stillActive = ([regex]('function ' + $fnEsc + '\(([$\w]+)\)\{return [^{};]{1,400}?\.test\(\1\.toLowerCase\(\)\)\}')).IsMatch($check)
         if ($stillActive) { $report.BlocklistClean = $false }
     }
     return $report
@@ -191,7 +197,7 @@ function Test-AsarPatched {
     param([Parameter(Mandatory)][string]$AsarPath)
     $s = [System.Text.Encoding]::ASCII.GetString([System.IO.File]::ReadAllBytes($AsarPath))
     $gwDone = ([regex]'case"gateway":case"mantle":return[ \t]*\{ok:').IsMatch($s)
-    $gwRaw  = @(([regex]'case"gateway":case"mantle":return[ \t]*[$A-Za-z_][\w$]*\([$\w]+\)').Matches($s)).Count
+    $gwRaw  = @(([regex]'case"gateway":case"mantle":(return[ \t]*[$A-Za-z_][\w$]*\([$\w]+\))').Matches($s)).Count
     return [pscustomobject]@{ GatewayOk = $gwDone -and ($gwRaw -eq 0); HasUnpatchedGateway = ($gwRaw -gt 0) }
 }
 
@@ -222,8 +228,9 @@ function Repair-AsarIntegrity {
                "Refusing to modify a mismatched install; the app may already be in an unknown state.")
     }
 
-    $enc = [System.Text.Encoding]::ASCII
-    $json = $enc.GetString($bytes, 16, $jsonLen)
+    $utf8NoBom = New-Object System.Text.UTF8Encoding($false)
+    $ascii = [System.Text.Encoding]::ASCII
+    $json = $utf8NoBom.GetString($bytes, 16, $jsonLen)
     $obj = $json | ConvertFrom-Json
 
     # collect every file entry that declares integrity
@@ -266,7 +273,7 @@ function Repair-AsarIntegrity {
         }
         if ($h -eq $e.Hash -and -not $blocksDiffer) { continue }
 
-        # stale entry: rewrite hashes inside the raw header text (same length)
+        # stale entry: rewrite hashes inside this entry's exact integrity object (same byte length)
         $pat = '"size":' + $e.Size + ',"offset":"' + $e.Offset + '"'
         $pos = $json.IndexOf($pat, [StringComparison]::Ordinal)
         if ($pos -lt 0) {
@@ -274,8 +281,13 @@ function Repair-AsarIntegrity {
             $pos = $json.IndexOf($pat, [StringComparison]::Ordinal)
         }
         if ($pos -lt 0) { throw "Cannot locate header entry for '$($e.Path)'; aborting." }
-        $winLen = [Math]::Min(900, $json.Length - $pos)
-        $win = $json.Substring($pos, $winLen)
+
+        $intKeyPos = $json.IndexOf('"integrity":{', $pos, [StringComparison]::Ordinal)
+        if ($intKeyPos -lt 0) { throw "Cannot locate integrity block for '$($e.Path)'; aborting." }
+        $intEnd = $json.IndexOf('}', $intKeyPos, [StringComparison]::Ordinal)
+        if ($intEnd -lt 0) { throw "Unterminated integrity block for '$($e.Path)'; aborting." }
+
+        $win = $json.Substring($intKeyPos, $intEnd - $intKeyPos + 1)
         $orig = $win
         if ($e.Hash) { $win = $win.Replace('"' + $e.Hash + '"', '"' + $h + '"') }
         for ($i = 0; $i -lt $e.Blocks.Count; $i++) {
@@ -285,20 +297,20 @@ function Repair-AsarIntegrity {
         }
         if ($win.Length -ne $orig.Length) { throw "Header rewrite changed length for '$($e.Path)'." }
         if ($win -eq $orig) { throw "No-op header rewrite for '$($e.Path)'; aborting." }
-        $json = $json.Remove($pos, $win.Length).Insert($pos, $win)
+        $json = $json.Remove($intKeyPos, $win.Length).Insert($intKeyPos, $win)
         $fixed++
     }
 
     if ($fixed -gt 0) {
-        if ($json.Length -ne $jsonLen) { throw "Header JSON length changed; aborting." }
-        $jb = $enc.GetBytes($json)
+        $jb = $utf8NoBom.GetBytes($json)
+        if ($jb.Length -ne $jsonLen) { throw "Header JSON byte length changed ($($jb.Length) != $jsonLen); aborting." }
         [Array]::Copy($jb, 0, $bytes, 16, $jb.Length)
     }
 
     $headerHashAfter = Get-Sha256Hex -Bytes $bytes -Offset 16 -Length $jsonLen
     $exePatched = $false
     if ($headerHashAfter -ne $headerHashBefore) {
-        $nb = $enc.GetBytes($headerHashAfter)
+        $nb = $ascii.GetBytes($headerHashAfter)
         foreach ($idx in $exeIdxAll) {
             [Array]::Copy($nb, 0, $exeBytes, $idx, 64)
         }
@@ -307,14 +319,13 @@ function Repair-AsarIntegrity {
     }
     if ($fixed -gt 0 -or $exePatched) { [System.IO.File]::WriteAllBytes($AsarPath, $bytes) }
 
-    # final verification pass
+    # final verification pass (checks whole-file hash and all block hashes)
     $vb = [System.IO.File]::ReadAllBytes($AsarPath)
     $vN = [BitConverter]::ToUInt32($vb, 4)
     $vHdr = Get-Sha256Hex -Bytes $vb -Offset 16 -Length ($vN - 8)
-    $vjson = [System.Text.Encoding]::ASCII.GetString($vb, 16, ($vN - 8))
+    $vjson = $utf8NoBom.GetString($vb, 16, ($vN - 8))
     $vobj = $vjson | ConvertFrom-Json
     $vStart = 8 + $vN
-    $stale = 0
     $vwalk = {
         param($node)
         if ($null -eq $node) { return }
@@ -322,9 +333,25 @@ function Repair-AsarIntegrity {
         if ($props -contains 'files') {
             foreach ($k in $node.files.PSObject.Properties.Name) { & $vwalk $node.files.$k }
         } elseif ($props -contains 'integrity' -and $node.integrity -and ($props -contains 'offset') -and ($props -contains 'size')) {
+            $sz = [int64]$node.size
             $st = [int]($vStart + [int64]$node.offset)
-            $hh = Get-Sha256Hex -Bytes $vb -Offset $st -Length ([int]$node.size)
-            if ($hh -ne $node.integrity.hash) { $script:__stalePaths += $node }
+            $hh = Get-Sha256Hex -Bytes $vb -Offset $st -Length ([int]$sz)
+            $entryStale = ($hh -ne $node.integrity.hash)
+            if (-not $entryStale -and $node.integrity.blockSize -gt 0) {
+                $vBlocks = @($node.integrity.blocks)
+                $bi = 0
+                for ($p = 0; $p -lt $sz; $p += $node.integrity.blockSize) {
+                    $len = [Math]::Min([int64]$node.integrity.blockSize, $sz - $p)
+                    $bh = Get-Sha256Hex -Bytes $vb -Offset ([int]($st + $p)) -Length ([int]$len)
+                    if ($bi -ge $vBlocks.Count -or $bh -ne $vBlocks[$bi]) {
+                        $entryStale = $true
+                        break
+                    }
+                    $bi++
+                }
+                if ($bi -ne $vBlocks.Count) { $entryStale = $true }
+            }
+            if ($entryStale) { $script:__stalePaths += $node }
         }
     }
     $script:__stalePaths = @()
@@ -332,7 +359,7 @@ function Repair-AsarIntegrity {
     $stale = $script:__stalePaths.Count
     Remove-Variable __stalePaths -Scope Script -ErrorAction SilentlyContinue
 
-    $exeOk = [System.Text.Encoding]::ASCII.GetString([System.IO.File]::ReadAllBytes($ExePath)).Contains($vHdr)
+    $exeOk = $ascii.GetString([System.IO.File]::ReadAllBytes($ExePath)).Contains($vHdr)
     if ($stale -gt 0 -or -not $exeOk) {
         throw "Integrity verification failed (stale entries: $stale, exe expectation match: $exeOk)."
     }
@@ -358,8 +385,14 @@ function Get-EndpointModels {
     )
     $base = $BaseUrl.TrimEnd('/')
     $candidates = @()
-    if ($base -match '/v1$') { $candidates += "$base/models"; $candidates += "$($base.TrimEnd('/v1'))/v1/models" }
-    else                     { $candidates += "$base/v1/models"; $candidates += "$base/models" }
+    if ($base -match '/v1$') {
+        $candidates += "$base/models"
+        $rootBase = ($base -replace '/v1$', '')
+        $candidates += "$rootBase/models"
+    } else {
+        $candidates += "$base/v1/models"
+        $candidates += "$base/models"
+    }
     $candidates = $candidates | Select-Object -Unique
 
     $headers = @{}
@@ -514,7 +547,7 @@ function Write-ClaudeCodeConfig {
     Set-EnvProp $envObj 'ANTHROPIC_BASE_URL' $BaseUrl.TrimEnd('/')
     if ($ApiKey) { Set-EnvProp $envObj 'ANTHROPIC_AUTH_TOKEN' $ApiKey }
 
-    $knownTiers = @('sonnet', 'opus', 'haiku', 'fable')
+    $knownTiers = @('sonnet', 'opus', 'haiku', 'fable', 'mythos')
     foreach ($m in @($Models)) {
         $tier = "$($m.Tier)".ToLowerInvariant()
         if ($tier -in $knownTiers) {

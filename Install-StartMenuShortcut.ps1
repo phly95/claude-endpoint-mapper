@@ -1,4 +1,4 @@
-<#
+﻿<#
     Install-StartMenuShortcut.ps1
     Adds "Claude Endpoint Mapper" to the current user's Start Menu.
 
@@ -28,12 +28,15 @@ if ($Uninstall) {
 
 if (-not (Test-Path $gui)) { throw "GUI script not found next to this installer: $gui" }
 
-# Icon: prefer the installed Claude Desktop executable
+# Icon: prefer the newest installed Claude Desktop executable (numeric version sort)
 $icon = $null
 $claudeRoot = Join-Path $env:LOCALAPPDATA 'AnthropicClaude'
 if (Test-Path $claudeRoot) {
     $app = Get-ChildItem $claudeRoot -Directory -Filter 'app-*' -ErrorAction SilentlyContinue |
-        Sort-Object Name -Descending | Select-Object -First 1
+        Sort-Object -Property @{
+            Expression = { try { [version]($_.Name -replace '^app-', '') } catch { [version]'0.0.0' } }
+            Descending = $true
+        } | Select-Object -First 1
     if ($app) {
         $exe = Join-Path $app.FullName 'claude.exe'
         if (Test-Path $exe) { $icon = "$exe,0" }
