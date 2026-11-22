@@ -4,7 +4,8 @@ Map **models from any Anthropic-compatible endpoint** (your own gateway, a proxy
 like LiteLLM / claude-code-router, or a hosted aggregator) onto Claude's model
 tier slots — `sonnet`, `opus`, `haiku`, `fable`, `mythos` — in **Claude Desktop**
 and **Claude Code**, with optional custom friendly names shown in Claude's model
-picker.
+picker. Runs on Windows (PowerShell) and on Nobara / Fedora Linux (Python, with a
+separate "Claude V100" launcher).
 
 You choose the endpoint, you choose the models. Nothing is tied to any specific
 provider.
@@ -18,7 +19,95 @@ provider.
 
 ---
 
-## Requirements
+## Nobara / Linux (Claude V100)
+
+Runs a **separate Claude Desktop window, "Claude V100"**, against your own
+gateway. Your normal Claude Desktop (and its login) is not touched: V100 is its
+own profile with its own data, plus `claude-v100` on the command line and a
+"Claude V100" entry in the application menu. The Windows instructions follow
+below this section.
+
+### How it works
+
+- `claude-v100` runs the stock launcher: `claude-desktop --profile=v100 --3p`.
+  Profile data lives in `~/.config/Claude-v100` and `~/.config/Claude-v100-3p`;
+  Claude Code sessions started from it use `~/.claude-v100`.
+- The gateway config goes to `~/.config/Claude-v100-3p/configLibrary/` (same JSON
+  as on Windows).
+- **No patching.** The `claude-desktop-extra` package ships an opt-in switch,
+  `allowNonAnthropicModels`, that makes Claude Desktop accept non-Anthropic model
+  names on a gateway. The tool sets it for V100 in
+  `~/.config/Claude-v100-3p/claude-desktop-extra.json`, so nothing under `/usr`
+  is modified and package updates do not undo anything. If the switch is not in
+  the installed app, `apply` refuses and says so (`status` shows
+  `native_switch: NO`).
+
+### Requirements
+
+- Nobara / Fedora with the `claude-desktop-extra` package (it provides
+  `/usr/bin/claude-desktop` and the switch above)
+- Python 3 (standard library only). The GUI also needs Tk (`python3-tkinter`).
+- An endpoint that speaks the Anthropic Messages API and lists models at
+  `/v1/models` or `/models`
+
+### GUI
+
+```bash
+python3 linux/endpoint-mapper-gui.py
+```
+
+Enter the endpoint and key, **Fetch models**, choose a tier and friendly name per
+model, then **Apply and restart Claude V100**. An already saved key is kept when
+the key field is left blank.
+
+### CLI
+
+Keys are read from stdin, never from the command line:
+
+```bash
+read -rs KEY                                   # type the key, nothing is echoed
+python3 linux/endpoint_mapper.py models --url https://gateway.example.com --key-stdin <<<"$KEY"
+python3 linux/endpoint_mapper.py apply --url https://gateway.example.com --key-stdin \
+  --model vendor-model-a=sonnet=Sonnet --model vendor-model-b=opus --model qwen3:30b \
+  --restart <<<"$KEY"
+```
+
+- `--model NAME[=TIER[=LABEL]]`, repeatable. TIER is one of `sonnet opus haiku
+  fable mythos`; blank means the model shows in the picker without a tier slot.
+- `--web-search tavily|brave|exa|custom|none` (+ `--web-search-key-stdin`,
+  `--web-search-url`) controls the built-in web search, see [Web search](#web-search).
+  The web search key is the second stdin line when both keys are given.
+- `--no-code` skips Claude Code settings; `--code-settings PATH` writes them
+  elsewhere (default `~/.claude-v100/settings.json`, so your normal `~/.claude`
+  is untouched).
+- `--restart` stops Claude V100 only, applies, and starts it again. Without it a
+  running V100 keeps its old config until you restart it.
+
+```bash
+python3 linux/endpoint_mapper.py status      # switch present? config? launcher? running?
+python3 linux/endpoint_mapper.py uninstall   # removes claude-v100 and the menu entry
+```
+
+`uninstall` keeps the profile data. To remove it as well, delete
+`~/.config/Claude-v100`, `~/.config/Claude-v100-3p` and, if you want, `~/.claude-v100`.
+
+Run the tests with `python3 -m unittest discover -s linux/tests -t linux`.
+
+### Linux troubleshooting
+
+- **`apply` says there is no allowNonAnthropicModels switch** — the installed
+  Claude Desktop is not `claude-desktop-extra` (or a version without it). Nothing
+  was written.
+- **Models do not show up** — the switch applies at startup; restart V100
+  (`apply --restart`). If `claude-desktop-extra.jsonc` in the V100 `-3p` folder sets
+  `allowNonAnthropicModels` to `false`, that file wins and `apply` warns about it.
+- **"config_model_rejected" in `~/.config/Claude-v100-3p/logs/main.log`** — the
+  gateway refused the probe request for the first model. Check the model id and
+  that `POST /v1/messages` works on the endpoint.
+- **A second `claude-v100` does nothing** — V100 is already running; it just
+  focuses the existing window.
+
+## Windows: requirements
 
 - Windows 10/11
 - Claude Desktop installed (for the Desktop target)
@@ -26,7 +115,7 @@ provider.
 - An endpoint that speaks the Anthropic Messages API (Claude Code) and exposes a
   model list at `/v1/models` or `/models`
 
-## Quick start
+## Windows: quick start
 
 1. Download / clone this repository.
 2. Double-click `EndpointMapper-GUI.ps1` (or run
@@ -51,7 +140,7 @@ provider.
 
 Applying to Claude Desktop will close and restart the app.
 
-## What "Apply" actually does
+## Windows: what "Apply" actually does
 
 ### Claude Code
 
@@ -156,7 +245,7 @@ Claude Code's `WebSearch`, so the built-in tool starts returning results. Untick
 the box and Apply to remove the entry again; other `managedMcpServers` entries
 are preserved.
 
-CLI equivalent:
+CLI equivalent (Windows PowerShell; on Linux use `--web-search` as shown above):
 
 ```powershell
 # keyless Tavily
@@ -192,7 +281,7 @@ Then allow `mcp__tavily__tavily-search` in your permissions. Gateway operators
 can alternatively run LiteLLM's `websearch_interception`, which executes the
 search inside the proxy so the built-in tool keeps working unchanged.
 
-## Backups and restoring
+## Windows: backups and restoring
 
 Before the first modification, the tool saves:
 
@@ -208,7 +297,7 @@ or neither. Note:
   afterwards. The tool always targets the newest `app-*` folder.
 - Patch application is idempotent — re-running Apply is safe.
 
-## CLI usage (optional)
+## Windows: CLI usage (optional)
 
 The GUI is a thin layer over a PowerShell module:
 
@@ -230,7 +319,7 @@ Useful cmdlets: `Get-ClaudeDesktopApp`, `Test-AsarPatched`,
 `Repair-AsarPatch`, `Repair-AsarIntegrity`, `Write-DesktopConfig`,
 `Write-ClaudeCodeConfig`, `Restore-DesktopPatch`.
 
-## Troubleshooting
+## Windows: troubleshooting
 
 - **"Validator patch ... gateway switch not found"** — this Claude Desktop
   version changed its bundled code. The tool refuses to guess; open an issue with
@@ -248,7 +337,7 @@ Useful cmdlets: `Get-ClaudeDesktopApp`, `Test-AsarPatched`,
 - **After a Claude Desktop update, mappings are gone** — re-run Apply. The
   update replaced `app.asar` and `claude.exe`.
 
-## Uninstall / revert
+## Windows: uninstall / revert
 
 1. Run `Restore-DesktopPatch` from the module (restores the `.origbak` pair).
 2. Remove the `env` entries from `%USERPROFILE%\.claude\settings.json` (or delete
