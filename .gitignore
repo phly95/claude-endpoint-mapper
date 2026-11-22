@@ -1,0 +1,14 @@
+# Local artifacts / secrets must never be committed
+*.origbak
+*.patchbak
+*.step1bak
+*.sealedbak
+*.log
+*.json
+!settings.example.json
+
+# Editor / OS noise
+.vscode/
+.idea/
+Thumbs.db
+desktop.ini
