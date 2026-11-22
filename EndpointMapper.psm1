@@ -401,10 +401,15 @@ function Get-EndpointModels {
         else { $headers['Authorization'] = "Bearer $ApiKey" }
     }
 
+    # Identify ourselves explicitly: some gateways sit behind a WAF (e.g. Cloudflare) that
+    # blocks generic HTTP-client User-Agents outright with a 403 before the request
+    # reaches the gateway.
+    $userAgent = 'claude-endpoint-mapper/1.0'
+
     $lastErr = $null
     foreach ($url in $candidates) {
         try {
-            $resp = Invoke-RestMethod -Uri $url -Headers $headers -Method Get -TimeoutSec 20
+            $resp = Invoke-RestMethod -Uri $url -Headers $headers -Method Get -TimeoutSec 20 -UserAgent $userAgent
             $ids = @()
             if ($resp -and $resp.data -and ($resp.data | Get-Member -Name id -ErrorAction SilentlyContinue)) {
                 $ids = @($resp.data | ForEach-Object { $_.id } | Where-Object { $_ })
